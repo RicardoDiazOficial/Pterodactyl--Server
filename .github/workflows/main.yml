@@ -1,0 +1,172 @@
+name: INFINIX NETWORK - PTERODACTYL FINAL
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  vps-ptero:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: "1. Preparar Entorno"
+        uses: actions/checkout@v4
+
+      - name: "2. Recuperar Caché (El Disco Duro)"
+        id: cache-srv
+        uses: actions/cache/restore@v4
+        with:
+          path: SRV
+          key: srv-ptero-${{ github.run_id }}
+          restore-keys: |
+            srv-ptero-
+
+      - name: "3. Red Privada (Tailscale + SSH)"
+        run: |
+          echo "⏳ Configurando SSH..."
+          echo "runner:runnerpass" | sudo chpasswd
+          sudo sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config || true
+          sudo sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config || true
+          sudo systemctl restart ssh || true
+          
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscale up --authkey=tskey-auth-kCxCNvJST811CNTRL-XTonMx8eTw3YNvyQgS7Vw3vJvFpcVmSG --hostname=Infinix-Ptero --ssh
+          
+          tailscale ip -4 > ts_ip.txt
+          echo "✅ IP Tailscale: $(cat ts_ip.txt)"
+
+      - name: "4. Crear Arquitectura Docker Compose"
+        run: |
+          TS_IP=$(cat ts_ip.txt)
+          mkdir -p SRV/mysql SRV/panel-var SRV/panel-logs SRV/wings-etc SRV/wings-data
+          sudo chmod -R 777 SRV
+          
+          # Generamos el archivo. Panel en puerto 8000. Wings usará 8080 automático (host).
+          cat << EOF > docker-compose.yml
+          version: '3.8'
+          services:
+            database:
+              image: mariadb:10.5
+              restart: always
+              command: --default-authentication-plugin=mysql_native_password
+              environment:
+                MYSQL_DATABASE: panel
+                MYSQL_USER: pterodactyl
+                MYSQL_PASSWORD: ptero_password
+                MYSQL_ROOT_PASSWORD: root_password
+              volumes:
+                - ./SRV/mysql:/var/lib/mysql
+            cache:
+              image: redis:alpine
+              restart: always
+            panel:
+              image: ghcr.io/pterodactyl/panel:latest
+              restart: always
+              ports:
+                - "8000:80"
+              environment:
+                APP_URL: "http://$TS_IP:8000"
+                APP_TIMEZONE: "America/Caracas"
+                APP_ENV: "production"
+                APP_KEY: "base64:w/M2+2DqQy4GZ01fR5FwD+xKqU/0Qj9nZ9mYq+X7B+A="
+                DB_HOST: database
+                DB_PORT: 3306
+                DB_DATABASE: panel
+                DB_USERNAME: pterodactyl
+                DB_PASSWORD: ptero_password
+                CACHE_DRIVER: redis
+                SESSION_DRIVER: redis
+                QUEUE_CONNECTION: redis
+                REDIS_HOST: cache
+              volumes:
+                - ./SRV/panel-var:/app/var/
+                - ./SRV/panel-logs:/app/storage/logs/
+            wings:
+              image: ghcr.io/pterodactyl/wings:latest
+              restart: always
+              network_mode: "host"
+              volumes:
+                - /var/run/docker.sock:/var/run/docker.sock
+                - /var/lib/docker/containers:/var/lib/docker/containers
+                - ./SRV/wings-etc:/etc/pterodactyl
+                - ./SRV/wings-data:/var/lib/pterodactyl
+          EOF
+
+      - name: "5. Lógica de Arranque Inteligente"
+        run: |
+          echo "🚀 Levantando sistema Pterodactyl..."
+          docker compose up -d database cache panel
+          
+          echo "⏳ Verificando Base de Datos..."
+          for i in {1..30}; do
+            if docker compose exec -T database mysqladmin ping -h localhost -uroot -proot_password --silent; then break; fi
+            sleep 2
+          done
+          
+          docker compose exec -T panel chown -R 33:33 /app/var /app/storage || true
+          
+          # Si la carpeta SRV/mysql/panel no existe, es la primera vez
+          if[ ! -d "SRV/mysql/panel" ]; then
+            echo "🆕 PRIMERA VEZ: Aplicando Fix SSL e instalando..."
+            docker compose exec -T panel apk add --no-cache mysql-client mariadb-client || true
+            docker compose exec -T panel sh -c 'echo "#!/bin/sh" > /usr/local/bin/mysql'
+            docker compose exec -T panel sh -c 'echo "mariadb --skip-ssl \"\$@\"" >> /usr/local/bin/mysql'
+            docker compose exec -T panel chmod +x /usr/local/bin/mysql
+            
+            docker compose exec -T panel php artisan migrate:fresh --seed --force || true
+            docker compose exec -T panel php artisan p:user:make --email="admin@infinix.com" --username="admin" --name-first="Admin" --name-last="Infinix" --password="adminpassword" --admin=1 || true
+          else
+            echo "♻️ CACHÉ DETECTADO: El panel ya está configurado. Iniciando rápido..."
+            docker compose exec -T panel php artisan optimize:clear || true
+          fi
+          
+          docker compose up -d wings
+          echo "✅ Wings Online. (Si el server de MC estaba prendido, se está encendiendo ahora)."
+
+      - name: "6. Conectar Playit (Red Externa)"
+        run: |
+          docker run -d \
+            --name=playit \
+            --net=host \
+            -e SECRET_KEY=6d0615844adfcc7f2bd89a75d44504c48aaab7c23c0ca4aa1ead3e3ac665a8b7 \
+            ghcr.io/playit-cloud/playit-agent:0.17
+          echo "✅ Jugadores conectados."
+
+      - name: "7. Info del Sistema y Ciclo (5h 45m)"
+        run: |
+          TS_IP=$(cat ts_ip.txt)
+          echo "---------------------------------------------------------"
+          echo "🌐 WEB PTERODACTYL : http://$TS_IP:8000"
+          echo "💻 CONSOLA SSH     : ssh runner@$TS_IP"
+          echo "🔐 CLAVE SSH       : runnerpass"
+          echo "---------------------------------------------------------"
+          sleep 20700 
+
+      - name: "8. Apagado Seguro y Guardado"
+        if: always()
+        run: |
+          echo "🛑 Guardando mundo y apagando Pterodactyl..."
+          # docker compose down envía señal de apagado a Wings, quien guarda el server de MC
+          docker compose down || true
+          docker stop playit || true
+          sleep 10
+
+      - name: "9. Save Cache"
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: SRV
+          key: srv-ptero-${{ github.run_id }}
+
+      - name: "10. Relevo"
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # CAMBIA 'main.yml' POR TU NOMBRE DE ARCHIVO
+          gh workflow run "main.yml" --ref main
+          sleep 600
