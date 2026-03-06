@@ -102,7 +102,7 @@ jobs:
           echo "⏳ Esperando 25s para que la Base de Datos esté lista..."
           sleep 25
           
-          if[ ! -d "SRV/mysql/panel" ]; then
+          if [ ! -d "SRV/mysql/panel" ]; then
             echo "🆕 Primera vez: Configurando Base de Datos..."
             docker compose exec -T panel php artisan migrate --seed --force || true
             echo "🆕 Creando Administrador Principal..."
