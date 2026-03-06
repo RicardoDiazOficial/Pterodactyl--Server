@@ -110,7 +110,7 @@ jobs:
           docker compose exec -T panel chown -R 33:33 /app/var /app/storage || true
           
           # Si la carpeta SRV/mysql/panel no existe, es la primera vez
-          if[ ! -d "SRV/mysql/panel" ]; then
+          if [ ! -d "SRV/mysql/panel" ]; then
             echo "🆕 PRIMERA VEZ: Aplicando Fix SSL e instalando..."
             docker compose exec -T panel apk add --no-cache mysql-client mariadb-client || true
             docker compose exec -T panel sh -c 'echo "#!/bin/sh" > /usr/local/bin/mysql'
