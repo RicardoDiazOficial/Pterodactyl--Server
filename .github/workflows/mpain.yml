@@ -1,0 +1,128 @@
+name: INFINIX NETWORK - MCSMANAGER
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  vps-mcs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: "1. Preparar Entorno"
+        uses: actions/checkout@v4
+
+      - name: "2. Recuperar Caché (SRV)"
+        id: cache-srv
+        uses: actions/cache/restore@v4
+        with:
+          path: SRV
+          key: srv-mcs-${{ github.run_id }}
+          restore-keys: |
+            srv-mcs-
+
+      - name: "3. Red Privada (Tailscale + SSH)"
+        run: |
+          echo "runner:runnerpass" | sudo chpasswd
+          sudo sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config || true
+          sudo sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config || true
+          sudo systemctl restart ssh || true
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscale up --authkey=tskey-auth-kCxCNvJST811CNTRL-XTonMx8eTw3YNvyQgS7Vw3vJvFpcVmSG --hostname=Infinix-MCS --ssh
+          tailscale ip -4 > ts_ip.txt
+
+      - name: "4. Desplegar MCSManager (Docker Compose)"
+        run: |
+          TS_IP=$(cat ts_ip.txt)
+          mkdir -p SRV/mcs-data
+          sudo chmod -R 777 SRV
+          
+          # Creamos un docker-compose ultra simple
+          cat << EOF > docker-compose.yml
+          version: '3'
+          services:
+            web:
+              image: mcsmanager/mcsmanager-web:latest
+              restart: always
+              ports:
+                - "23333:23333"
+              volumes:
+                - ./SRV/mcs-data/web:/opt/mcsmanager/web/data
+              environment:
+                - TZ=America/Caracas
+              depends_on:
+                - daemon
+            daemon:
+              image: mcsmanager/mcsmanager-daemon:latest
+              restart: always
+              ports:
+                - "24444:24444"
+                - "19132:19132/udp" 
+              volumes:
+                - ./SRV/mcs-data/daemon:/opt/mcsmanager/daemon/data
+                - /var/run/docker.sock:/var/run/docker.sock
+              environment:
+                - TZ=America/Caracas
+          EOF
+
+      - name: "5. Iniciar Panel"
+        run: |
+          echo "🚀 Iniciando MCSManager..."
+          docker compose up -d
+          
+          echo "⏳ Esperando 10 segundos a que cargue..."
+          sleep 10
+          
+          echo "✅ Panel Online."
+
+      - name: "6. Conectar Playit"
+        run: |
+          docker run -d \
+            --name=playit \
+            --net=host \
+            -e SECRET_KEY=6d0615844adfcc7f2bd89a75d44504c48aaab7c23c0ca4aa1ead3e3ac665a8b7 \
+            ghcr.io/playit-cloud/playit-agent:0.17
+          echo "✅ Red pública lista."
+
+      - name: "7. Datos de Acceso"
+        run: |
+          TS_IP=$(cat ts_ip.txt)
+          echo "---------------------------------------------------------"
+          echo "👑 INFINIX MCSMANAGER LISTO"
+          echo "🌐 URL Panel : http://$TS_IP:23333"
+          echo "👤 Usuario   : root"
+          echo "🔑 Contraseña: 123456"
+          echo "---------------------------------------------------------"
+          echo "⚠️ PRIMER PASO AL ENTRAR:"
+          echo "1. Ve a 'Daemon' (o Nodos)."
+          echo "2. Si no aparece uno, dale a 'Add' -> 'Localhost' -> 'Import'."
+          echo "3. ¡Listo! Crea tu server de Minecraft."
+          echo "---------------------------------------------------------"
+          sleep 20700 
+
+      - name: "8. Guardado y Apagado"
+        if: always()
+        run: |
+          echo "🛑 Guardando MCSManager..."
+          docker compose down || true
+          docker stop playit || true
+          sleep 5
+
+      - name: "9. Save Cache"
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: SRV
+          key: srv-mcs-${{ github.run_id }}
+
+      - name: "10. Relevo"
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run "main.yml" --ref main
+          sleep 600
